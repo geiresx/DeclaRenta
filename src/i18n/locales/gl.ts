@@ -1075,10 +1075,6 @@ const gl: TranslationKeys = {
     "{{count}} operación(s) de Advanced Trade de Coinbase pagáronse ou cobráronse nunha moeda distinta da de valoración ({{pairs}}); só se rexistrou a criptomoeda comprada ou vendida, non a moeda de contrapartida.",
   "coinbase.advanced_trade_quote_leg_missing.hint":
     "Nestes pares tamén transmites (ao comprar) ou adquires (ao vender) a moeda de cotización, sexa outra criptomoeda ou unha divisa, e esa operación tamén tributa. Engade manualmente a venda ou a compra desa moeda polo mesmo valor en euros da operación para que a súa ganancia e o seu custo de adquisición cadren.",
-  "trade_republic.trade_skipped_no_amount":
-    "Omitiuse(ronse) {{count}} operación(s) de compravenda de Trade Republic sen importe utilizable.",
-  "trade_republic.trade_skipped_no_amount.hint":
-    'Adoita deberse a filas incompletas na exportación (columna "amount" baleira ou non numérica). Se faltan operacións, volve descargar o CSV de transaccións completo desde Trade Republic.',
   "trade_republic.corporate_action_not_applied":
     "Trade Republic: non se aplicaron {{count}} movemento(s) de acción corporativa (fusión, canxe, split) de {{isins}}.",
   "trade_republic.corporate_action_not_applied.hint":
@@ -1112,6 +1108,20 @@ const gl: TranslationKeys = {
   "parser.trade_quantity_unknown.hint": "DeclaRenta non suma nin resta accións por elas, así que as ganancias e perdas dese valor non son fiables e non se aplica a excepción de compra única da regra dos 2 meses. Comproba que o ficheiro exportado trae a cantidade e o prezo de cada operación e volve exportalo.",
   "parser.crypto_quantity_unknown": "{{broker}} non dá un número de unidades ou un prezo lexible para {{count}} operación(s) con criptomoedas: {{trades}}.",
   "parser.crypto_quantity_unknown.hint": "DeclaRenta non suma nin resta unidades por elas, así que as ganancias e perdas desa criptomoeda non son fiables. Se unha delas é unha recompra no ano seguinte a unha venda con perdas, esa perda pode ter que quedar pendente (art. 33.5.e LIRPF), e DeclaRenta non a bloquea porque non sabe cantas unidades recompraches. Comproba que o ficheiro exportado trae a cantidade e o prezo de cada operación e volve exportalo.",
+  "parser.trade_row_unreadable": "{{broker}}: {{count}} fila(s) de operación non se poden ler e non se calculan: {{rows}}.",
+  "parser.trade_row_unreadable.hint": "Entre corchetes vai a cela que falta, está baleira, non se pode ler ou trae un tipo de operación que DeclaRenta non recoñece. DeclaRenta non suma nin resta accións, unidades nin diñeiro por esas filas, así que as ganancias e perdas deses valores non son fiables, e non aplica a excepción de compra única da regra dos 2 meses a un valor que poida ser o dunha delas. Se unha fila é unha compra ou unha venda real, corrixe esa cela no ficheiro do broker e volve subilo.",
+  "revolut.bad_fx_rate": "Omitíronse {{count}} ingreso(s) ou retirada(s) de efectivo do extracto de Revolut porque o seu tipo de cambio (FX Rate) non é válido: {{rows}}.",
+  "revolut.bad_fx_rate.hint": "Só os ingresos e as retiradas de efectivo usan esa columna; as compras, as vendas e os dividendos calcúlanse co tipo do BCE e non se omiten. Adoita deberse a unha cela de tipo de cambio non numérica, negativa ou igual a cero na exportación. Volve descargar o Trading Account Statement completo desde a app de Revolut para que eses movementos se inclúan.",
+  "revolut.holding_size_unknown": "O extracto de Revolut non permite saber cantas accións ou unidades tes ao final de {{count}} valor(es): {{tickers}}.",
+  "revolut.holding_size_unknown.hint": "Unha fila de cada un non se pode ler ou non di cantas accións ou unidades move (outro aviso nomea esa fila). DeclaRenta mostra só a parte que si se pode ler, que pode ser 0. Para os modelos 720 e 721, toma o número e o valor desas posicións do extracto de Revolut e engádeos a man.",
+  "parser.corporate_action_not_applied": "{{broker}}: non se aplicaron {{count}} fila(s) de desdobramento, agrupación ou outra operación societaria: {{rows}}.",
+  "parser.corporate_action_not_applied.hint": "DeclaRenta non cambia por elas o número de accións nin o custo deses valores, así que as ganancias e perdas das súas vendas posteriores poden non ser correctas: compróbaas co extracto do broker. Tampouco aplica a eses valores a excepción de compra única da regra dos 2 meses.",
+  "parser.cash_row_undated": "{{broker}}: {{count}} movemento(s) de diñeiro non teñen unha data lexible e non se calculan: {{rows}}.",
+  "parser.cash_row_undated.hint": "Entre corchetes vai a cela da data. Sen data, DeclaRenta non sabe a que ano pertence o importe nin que tipo de cambio do BCE lle corresponde, así que non o suma e non inventa unha data. Se é un dividendo, unha retención, un xuro ou outro ingreso do ano que declaras, corrixe a data no ficheiro do broker e volve subilo, ou engade o importe a man en Renta Web.",
+  "parser.cash_row_unidentified": "{{broker}}: {{count}} dividendo(s) ou retención(s) non din de que valor son e non se calculan: {{rows}}.",
+  "parser.cash_row_unidentified.hint": "A fila non trae nin o ticker nin o ISIN. Sen o valor, DeclaRenta non sabe de que país vén o dividendo nin con que retención vai, así que non o suma e non inventa o valor. Se é un ingreso do ano que declaras, corrixe a fila no ficheiro do broker e volve subilo, ou engade o importe a man en Renta Web.",
+  "revolut.dividend_tax_correction": "O extracto de Revolut trae {{count}} corrección(s) da retención dun dividendo (DIVIDEND TAX (CORRECTION)) que DeclaRenta non suma: {{rows}}.",
+  "revolut.dividend_tax_correction.hint": "Con estas filas Revolut corrixe a retención dun dividendo xa cobrado. DeclaRenta importa os dividendos de Revolut polo seu importe neto e non le a retención deste extracto, así que tampouco a súa corrección. Toma o dividendo bruto e a retención final, xa corrixida, do informe fiscal anual de Revolut.",
 };
 
 export default gl;

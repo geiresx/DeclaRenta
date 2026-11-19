@@ -39,6 +39,12 @@ import {
   quantityUnknownTrade,
   quantityUnreadable,
   tradeQuantityUnknownMessages,
+  unreadableTrade,
+  unreadableCell,
+  corporateActionTrade,
+  markUndatedTrades,
+  dropUndatedCash,
+  cashRowsUnidentifiedMessages,
 } from "./csv-utils.js";
 
 // ---------------------------------------------------------------------------
@@ -102,12 +108,16 @@ function resolveColumns(headers: string[]): Trading212Columns {
 // Date conversion
 // ---------------------------------------------------------------------------
 
-/** Convert "YYYY-MM-DD HH:MM:SS" to YYYYMMDD */
+/**
+ * Convert "YYYY-MM-DD HH:MM:SS" to YYYYMMDD. Any other text is returned as it
+ * is: the row is then kept and named as a row with no readable date, never
+ * read as another day and never a reason to refuse the file (#467).
+ */
 function convertTrading212Date(dateStr: string): string {
   const trimmed = dateStr.trim();
   const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (match) return `${match[1]}${match[2]}${match[3]}`;
-  throw new Error(`Trading 212 CSV: formato de fecha no reconocido: "${trimmed}"`);
+  return trimmed;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +142,15 @@ function isDividendAction(action: string): boolean {
 
 function isInterestAction(action: string): boolean {
   return /interest on cash/i.test(action);
+}
+
+/**
+ * One leg of a split or a consolidation: "Stock split close" takes the old
+ * shares out, "Stock split open" puts the new ones in. Not applied: kept as a
+ * row that books nothing, named by parser.corporate_action_not_applied.
+ */
+function isStockSplitAction(action: string): boolean {
+  return /^stock split (open|close)$/i.test(action);
 }
 
 function isSkippedAction(action: string): boolean {
@@ -161,6 +180,8 @@ function parseTrading212Csv(lines: string[]): Statement {
   // Total is in a currency that differs from the instrument's — we can derive
   // neither a per-share price nor usable trade money, so the row is unresolvable.
   let unresolvedPriceSkipped = 0;
+  // Dividend and withholding rows with no ticker and no ISIN (#467).
+  const unidentifiedCash: string[] = [];
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i]!.trim();
@@ -187,25 +208,79 @@ function parseTrading212Csv(lines: string[]): Statement {
     const totalStr = toFiniteDecimalString(fields[cols.total] ?? "0");
     const txId = (fields[cols.id] ?? "").trim();
 
-    if (!timeRaw) continue;
-    const tradeDate = convertTrading212Date(timeRaw);
-    const tradeTime = timeOfDay(timeRaw);
+    const tradeDate = timeRaw ? convertTrading212Date(timeRaw) : "";
+    const tradeTime = timeRaw ? timeOfDay(timeRaw) : undefined;
 
     if (isSkippedAction(action)) continue;
 
     const uniqueId = txId || `${tradeDate}-${ticker || action}-${i}`;
 
+    // A split leg moves shares of its security, so it is evidence of a
+    // holding at the anti-churning window start (#453, #467): kept as a row
+    // that books nothing, never dropped, and named as a split that is not
+    // applied, not as an unreadable row.
+    if (isStockSplitAction(action)) {
+      trades.push(corporateActionTrade({
+        tradeID: `trading212-split-${uniqueId}`,
+        symbol: ticker, description: name, isin, assetCategory: "STK", currency, tradeDate, tradeTime,
+        buySell: /close/i.test(action) ? "SELL" : "BUY", exchange: "TRADING212",
+      }, action, fields[cols.shares] ?? ""));
+      continue;
+    }
+
+    // A buy or sale row, or a row of an action no branch below handles (a
+    // share transfer) that names a ticker or an ISIN, is kept as a trade that
+    // books nothing when it cannot be read: no Time, no ticker, an unknown
+    // action. Dropping it would hide a purchase or a sale (#467).
+    // A row of an unknown action that writes a zero share count moves no
+    // shares and stays skipped, as does one that names no security. One that
+    // names its security only by Name is kept when it writes a share count.
+    // One with an empty share cell is a cash row ("Result adjustment", a fee,
+    // a tax): it moves no shares and stays skipped, as it was.
+    const buy = isBuyAction(action);
+    const sell = isSellAction(action);
+    const otherAction = !buy && !sell && !isDividendTaxAction(action) && !isDividendAction(action) && !isInterestAction(action);
+    const sharesUnreadable = quantityUnreadable(fields[cols.shares]);
+    const movesNoShares = !sharesUnreadable && new Decimal(sharesStr).isZero();
+    const named = ticker || isin ? true : name !== "" && !sharesUnreadable;
+    const sharesEmpty = (fields[cols.shares] ?? "").trim() === "";
+    if (otherAction && (!named || movesNoShares || sharesEmpty)) continue;
+    const unreadableCellOf = (): string | undefined => {
+      if (!timeRaw) return unreadableCell(headers[cols.time] ?? "Time", timeRaw);
+      if (otherAction) return unreadableCell(headers[cols.action] ?? "Action", action);
+      if ((buy || sell) && !ticker) return unreadableCell(headers[cols.ticker] ?? "Ticker", ticker);
+      return undefined;
+    };
+    const cell = buy || sell || otherAction ? unreadableCellOf() : undefined;
+    if (cell !== undefined) {
+      trades.push(unreadableTrade({
+        tradeID: `trading212-row-${uniqueId}`,
+        symbol: ticker, description: name, isin, assetCategory: "STK", currency, tradeDate, tradeTime,
+        ...(buy || sell ? { buySell: sell ? "SELL" as const : "BUY" as const } : {}), exchange: "TRADING212",
+      }, cell));
+      continue;
+    }
+    // A dividend, withholding or interest row with no readable Time is
+    // booked with that Time and taken out, named, by dropUndatedCash below.
+
+    // A dividend or withholding row with no ticker goes by its ISIN; with
+    // neither it is named, never dropped with no word (#467).
+    const security = ticker || isin;
+
     // Withholding tax on dividend — must be checked before the generic dividend branch
     if (isDividendTaxAction(action)) {
-      if (!ticker) continue;
       const amountDec = new Decimal(totalStr).abs().div(cashDivisor);
       if (amountDec.isZero()) continue;
+      if (!security) {
+        unidentifiedCash.push(`${action} -${amountDec.toString()} ${cashCurrency} ${tradeDate || "—"}`);
+        continue;
+      }
 
       cashTransactions.push({
         transactionID: `trading212-tax-${uniqueId}`,
         accountId: "",
-        symbol: ticker,
-        description: `Withholding tax - ${ticker}`,
+        symbol: security,
+        description: `Withholding tax - ${security}`,
         isin,
         currency: cashCurrency,
         dateTime: tradeDate,
@@ -219,15 +294,18 @@ function parseTrading212Csv(lines: string[]): Statement {
 
     // Dividends
     if (isDividendAction(action)) {
-      if (!ticker) continue;
       const amountDec = new Decimal(totalStr).abs().div(cashDivisor);
       if (amountDec.isZero()) continue;
+      if (!security) {
+        unidentifiedCash.push(`${action} ${amountDec.toString()} ${cashCurrency} ${tradeDate || "—"}`);
+        continue;
+      }
 
       cashTransactions.push({
         transactionID: `trading212-div-${uniqueId}`,
         accountId: "",
-        symbol: ticker,
-        description: `Dividend - ${ticker}`,
+        symbol: security,
+        description: `Dividend - ${security}`,
         isin,
         currency: cashCurrency,
         dateTime: tradeDate,
@@ -260,11 +338,8 @@ function parseTrading212Csv(lines: string[]): Statement {
       continue;
     }
 
-    // Buy / Sell trades
-    const buy = isBuyAction(action);
-    const sell = isSellAction(action);
+    // Buy / Sell trades (an unreadable one was kept above)
     if (!buy && !sell) continue;
-    if (!ticker) continue;
 
     const qtyDec = new Decimal(sharesStr).abs();
     if (qtyDec.isZero()) {
@@ -362,7 +437,12 @@ function parseTrading212Csv(lines: string[]): Statement {
     });
   }
 
-  parserMessages.push(...tradeQuantityUnknownMessages("Trading 212", trades));
+  markUndatedTrades(trades, headers[cols.time] ?? "Time");
+  parserMessages.push(
+    ...tradeQuantityUnknownMessages("Trading 212", trades),
+    ...dropUndatedCash("Trading 212", cashTransactions, headers[cols.time] ?? "Time"),
+    ...cashRowsUnidentifiedMessages("Trading 212", unidentifiedCash),
+  );
 
   return {
     accountId: "",

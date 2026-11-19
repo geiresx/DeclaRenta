@@ -122,6 +122,28 @@ export interface Trade {
    * disposal).
    */
   quantityUnknown?: boolean;
+  /**
+   * Set with `quantityUnknown` on a trade row the parser could not read at
+   * all (#467, #468): a bad date, no ticker or ISIN, an operation type that is
+   * neither a buy nor a sale, no amount. It names the row for the user
+   * (security, date, the unreadable cell); `parser.trade_row_unreadable` lists
+   * it. The row books nothing, as with an unreadable quantity.
+   */
+  unreadableRow?: string;
+  /**
+   * Set with `quantityUnknown` on a row of a split, a merger, a delivery or
+   * another corporate action the parser does not apply (#467). It names the
+   * row (security, date, action, share count);
+   * `parser.corporate_action_not_applied` lists it. The row books nothing.
+   */
+  corporateActionRow?: string;
+  /**
+   * Set on a kept row whose date the file does not give. The parsed file
+   * leaves `tradeDate` ""; `finalizeMergedStatement` puts the earliest date
+   * of the whole upload there, so the row falls before or inside every
+   * anti-churning window and never after a year-end list (#467).
+   */
+  undatedRow?: boolean;
   tradePrice: string;
   tradeMoney: string;
   proceeds: string;

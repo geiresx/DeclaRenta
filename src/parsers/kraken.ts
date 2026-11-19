@@ -23,6 +23,11 @@ import {
   findColumn,
   stripBom,
   timeOfDay,
+  tradeQuantityUnknownMessages,
+  unreadableTrade,
+  unreadableCell,
+  markUndatedTrades,
+  dropUndatedCash,
 } from "./csv-utils.js";
 
 // ---------------------------------------------------------------------------
@@ -231,16 +236,45 @@ function parseTradesCsv(lines: string[], delimiter: string): Statement {
     const feeDec = toFiniteDecimal(fields[cols.fee] ?? "0");
     const price = parseNumber(fields[cols.price] ?? "0");
 
-    if (!txid || !pair) continue;
+    const tradeDate = krakenDate(timeStr);
+    const tradeTime = timeOfDay(timeStr);
+    // A row with no txid is still a trade: the id only names it (#467).
+    const rowId = txid || `kraken-row-${i}`;
+    if (!pair) {
+      // A row with no pair names no coin. A blank line is skipped; a trade
+      // row (a txid, a type or a volume) is kept as a trade that books
+      // nothing, and named.
+      if (txid || type || !volDec.isZero()) {
+        trades.push(unreadableTrade({
+          tradeID: rowId, symbol: "", isin: "", assetCategory: "CRYPTO", currency: "EUR", tradeDate, tradeTime,
+          exchange: "KRAKEN", ...(type === "sell" ? { buySell: "SELL" as const } : {}),
+        }, unreadableCell(headers[cols.pair] ?? "pair", "")));
+      }
+      continue;
+    }
 
     const { base, quote, assumedQuote } = splitPair(pair);
     if (assumedQuote) unrecognizedPairs.set(pair, `${base}/${quote}`);
-    const tradeDate = krakenDate(timeStr);
-    const tradeTime = timeOfDay(timeStr);
+    // A type that is neither buy nor sell (empty, "settle", a margin
+    // settlement) is no purchase: it was booked as one (#468). The row is
+    // kept as a trade that books nothing, for each coin it names, and named.
+    if (type !== "buy" && type !== "sell") {
+      const cell = unreadableCell(headers[cols.type] ?? "type", fields[cols.type] ?? "");
+      const legs = [{ id: rowId, symbol: base, currency: quote }];
+      if (!isFiat(quote)) legs.push({ id: `${rowId}-${quote}`, symbol: quote, currency: base });
+      for (const leg of legs) {
+        trades.push(unreadableTrade({
+          tradeID: leg.id, symbol: leg.symbol, description: `${base}/${quote}`, isin: "", assetCategory: "CRYPTO",
+          currency: leg.currency, tradeDate, tradeTime, exchange: "KRAKEN",
+        }, cell));
+      }
+      continue;
+    }
+
     const isSell = type === "sell";
 
     trades.push({
-      tradeID: txid,
+      tradeID: rowId,
       accountId: "",
       symbol: base,
       description: `${base}/${quote}`,
@@ -272,7 +306,7 @@ function parseTradesCsv(lines: string[], delimiter: string): Statement {
     // base coin exactly like the Binance two-leg permuta. Fiat quotes have none.
     if (!isFiat(quote) && !volDec.isZero() && !costDec.isZero()) {
       trades.push({
-        tradeID: `${txid}-${quote}`,
+        tradeID: `${rowId}-${quote}`,
         accountId: "",
         symbol: quote,
         description: `${base}/${quote}`,
@@ -300,10 +334,12 @@ function parseTradesCsv(lines: string[], delimiter: string): Statement {
     }
   }
 
+  markUndatedTrades(trades, "time");
+
   // A pair we couldn't split with certainty (no known quote suffix) was split by
   // a guess — warn so the user knows that trade may be mis-valued and can verify
   // it (skip-and-warn, three-tier message policy).
-  const parserMessages: TaxMessage[] = unrecognizedPairs.size > 0
+  const parserMessages: TaxMessage[] = [...(unrecognizedPairs.size > 0
     ? [{
         id: "kraken.unrecognized_pair",
         severity: "warning" as const,
@@ -311,7 +347,7 @@ function parseTradesCsv(lines: string[], delimiter: string): Statement {
         hint: "Suele deberse a un par poco habitual no incluido en la lista de divisas conocidas. Revisa esas operaciones y, si la moneda o la divisa de cotización no son las indicadas, corrige su valor manualmente.",
         context: { count: String(unrecognizedPairs.size) },
       }]
-    : [];
+    : []), ...tradeQuantityUnknownMessages("Kraken", trades)];
 
   return {
     accountId: "",
@@ -398,7 +434,7 @@ function parseLedgersCsv(lines: string[], delimiter: string): Statement {
   }
 
   const ignoredCount = [...ignoredTypes.values()].reduce((a, b) => a + b, 0);
-  const parserMessages: TaxMessage[] = ignoredCount > 0
+  const parserMessages: TaxMessage[] = [...dropUndatedCash("Kraken", cashTransactions, "time"), ...(ignoredCount > 0
     ? [{
         id: "kraken.ledger_rows_ignored",
         severity: "info" as const,
@@ -406,7 +442,7 @@ function parseLedgersCsv(lines: string[], delimiter: string): Statement {
         hint: "Del libro mayor solo se leen las recompensas de staking y Earn; las compraventas se leen del CSV de operaciones (Trades). Las compras instantáneas (tipos spend y receive) pueden no aparecer en ese CSV: si es tu caso, añádelas para que la moneda comprada tenga coste de adquisición.",
         context: { count: String(ignoredCount) },
       }]
-    : [];
+    : [])];
 
   return {
     accountId: "",

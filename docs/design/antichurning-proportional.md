@@ -422,16 +422,17 @@ práctico Renta 2025. The decisions, each pinned in
     readable quantity stays out of its order's merge as its own flagged row,
     so the readable fills of that order still merge and book their shares and
     cost. A cell that is blank, only a currency symbol ("€") or no number is
-    unreadable. Only a buy or sale row is kept: a Freedom24 transfer stays
-    skipped, a Flatex row with neither Nominal nor Kurs is kept only when its
-    text says Kauf or Verkauf, a DEGIRO row with neither quantity nor price
-    only when it has an order id or a value. A written zero price (a
-    conversion, a rights assignment) stays skipped in these cases only: a
-    Flatex Kurs of any written zero, a DEGIRO price written "0" or "0,0000"
-    (a DEGIRO "0,00" is booked as written), and a Trading 212 price of zero
-    with the Total in another currency (with the Total in the instrument
-    currency the row is valued from the Total and booked). A DEGIRO row with
-    a written zero quantity ("0,00") and no readable price stays skipped too.
+    unreadable. A row of the security whose type is neither a buy nor a
+    sale (a Freedom24 transfer, a Flatex Einbuchung) is kept as an unreadable
+    row, as the next point says. A DEGIRO row with neither quantity nor price
+    is kept only when it has an order id or a value. A Flatex or DEGIRO row
+    with a written zero price (a conversion, a rights assignment, free
+    shares, a transfer in) moves shares of its ISIN, so it is kept as a
+    corporate-action row (below), whatever the spelling of the zero ("0",
+    "0.00", "0,0000"). A Trading 212 price of zero with the Total in another
+    currency stays skipped (with the Total in the instrument currency the row
+    is valued from the Total and booked). A DEGIRO row with a written zero
+    quantity ("0,00") and no readable price stays skipped too.
     An IBKR fill with `tradePrice="0"` and a readable quantity still reaches
     `mapTrade`. Revolut's
     closed-positions format keeps both legs of such a row, as eToro does. A
@@ -461,6 +462,150 @@ práctico Renta 2025. The decisions, each pinned in
     column, or a Revolut file (Revolut gives no ISIN), would otherwise hide
     it, because its account never trades the ISIN key. A holding closed
     before the window does not stop the exception.
+  - No trade row of the security is dropped because a parser cannot read it
+    (#466, #467, #468). A row that names a security (a ticker or an ISIN) and
+    looks like a trade, but whose date, ticker or ISIN, type or direction,
+    or amount cannot be read, is kept as a `quantityUnknownTrade` with
+    `Trade.unreadableRow`: the security, the date and the cell that failed,
+    for example `XYZ 20241202 [Type: "TRANSFER IN"]`. It books no shares and
+    no money, so it acts as a row of unknown quantity above (the ISIN is
+    "unverified"; with no ISIN, the trade is unidentified). The warning
+    `parser.trade_row_unreadable` names every such row. The shared helpers
+    are in `src/parsers/csv-utils.ts` (`unreadableTrade`, `unreadableCell`,
+    `markUndatedTrades`, `corporateActionTrade`, `dropUndatedCash`).
+    - A trade whose date is not a real day ("2024-13-45", "31-02-2024",
+      "02.12.2024 09:30" where the broker writes another format, or an empty
+      cell) is kept the same way, in every parser: a lot with a false date
+      could sit outside the window it belongs to. No parser throws for a
+      date any more. The parsed file leaves such a row with no date
+      (`tradeDate` "") and marks it `Trade.undatedRow`.
+      `finalizeMergedStatement` gives it the earliest readable date of the
+      whole upload (trades and cash rows), because the engine needs a real
+      day. Every sale is on or after that day, so the row stands before the
+      sale's window or inside it, never after another broker's year-end
+      list, where the evidence check does not look. With no ISIN, a row
+      there is an unidentified trade, and the exception is never "applied".
+      An upload with no readable date at all keeps the warning and books no
+      row.
+    - IBKR keeps one exception: a date in the wrong shape ("03/01/2025")
+      means the Flex Date Format setting is wrong, so the whole file is still
+      refused with the setting to change. A date of the right shape that is
+      no real day ("20240231") is kept as above.
+    - A split, consolidation, merger, spin-off or other corporate action
+      that names a security is kept as a row of unknown quantity with
+      `Trade.corporateActionRow` (the security, the date, the action and
+      the share count it writes). It books no shares and no money, and
+      `parser.corporate_action_not_applied` names it, not
+      `parser.trade_row_unreadable`. The engine does not apply corporate
+      actions from these files, so the user must check the holding by
+      hand; until then the security's evidence is "unverified".
+    - A cash row (a dividend, a withholding, interest, a deposit) whose date
+      is not a real day is not booked. We never guess its date: the date
+      sets the tax year, the ECB rate and the pairing of a dividend with
+      its withholding, and a guessed year can move income to the wrong
+      return. `parser.cash_row_undated` names each row with its type,
+      security, amount and the failing cell, so the user can add it by hand.
+    - A dividend or withholding row with no ticker goes by its ISIN
+      (Lightyear, Trading 212). With no ticker and no ISIN (and for
+      Scalable, no ISIN) it is not booked, for the same reason: the security
+      sets the source country and the pairing with the withholding.
+      `parser.cash_row_unidentified` names each row with its type, amount
+      and date (Lightyear, Scalable, Trading 212, Revolut).
+    - An IBKR cash `dateTime` written with the Flex Date/Time separator ",",
+      a space or none ("20240615,103000", "2024-06-15 10:30:00",
+      "20240615103000") is rewritten with ";" (`flexDateTime`). The engine
+      reads only ";", so such a dividend was dropped as undated or crashed
+      the report.
+    - In Revolut and eToro XLSX files, a date stored as a date cell is read
+      as its real day (`isoDateCells`). The sheet's display text ("1/10/25"
+      for the default format) is never parsed. A workbook in the 1904 date
+      system (Excel for Mac, Numbers) is read with that system: the same
+      serial number is a day 4 years and 1 day later.
+    - A slash date in text ("1/10/2024", "01/10/2024", "1/10/24") reads the
+      same with or without a leading zero, in one order per file
+      (`slashDateOrder`, `convertSlashDate`): day first, unless a date of the
+      file has a second part over 12 ("3/15/2025") and none a first part over
+      12. A 2-digit year is 20YY. A file with both kinds is day first, so its
+      month-first dates are no real day and are named, never read as another
+      day. A row of
+    an unknown type that writes a zero share count moves no shares and stays
+    skipped, and so does a row that names no security and moves no shares
+    (a cash line). A row that names its security only by name and writes a
+    share count is kept (Scalable, Trading 212, Flatex, Trade Republic). The
+    cases per broker:
+    - Revolut: a buy, sale or other type with a ticker and no readable date
+      (an undated row with no ticker is kept with no ISIN);
+      any type that is not a buy, sale, dividend, dividend tax correction,
+      split or cash row (a `SPINOFF`, a `TRANSFER IN`), also with a zero
+      quantity when it has an amount (a cash merger), unless it is a fee; a
+      buy or sale with no ticker; a closed position with no symbol; a split
+      with no readable date (a corporate-action row, and the holding is of
+      unknown size). Stop and stop-limit orders (`BUY - STOP`,
+      `SELL - STOP LIMIT`) are buys and sales. The
+      `FX Rate` cell is read only on a cash top-up or withdrawal, the only
+      rows that use it (#466): a bad cell no longer deletes a sale, a buy or
+      a dividend. A cash row with a bad rate is still skipped, and
+      `revolut.bad_fx_rate` names it by date and amount. A ticker with a row
+      of unknown size (a blank or unreadable quantity, an unreadable date or
+      type) gets a holding of unknown size (`OpenPosition.quantityUnknown`):
+      its quantity is the readable part, so the Modelo 720 and 721 still
+      count it as a holding to value by hand, and it is never complete
+      evidence. A buy of unknown size with nothing readable left makes one of
+      quantity "0"; a row of unknown type alone makes none.
+      `revolut.holding_size_unknown` names every such ticker.
+      A `DIVIDEND TAX (CORRECTION)` row books nothing, and
+      `revolut.dividend_tax_correction` (info) names it by ticker, date and
+      amount.
+    - Trading 212: a buy or sale with no readable Time or no ticker; an
+      action that is not a buy, sale, dividend, interest, split or cash row
+      and writes a share count. An unknown action with an empty share cell
+      (`Result adjustment`) is a cash row, not evidence; the same holds for
+      Lightyear and Scalable (`Fee`, `Tax`).
+      Each leg of a `Stock split open` or `Stock split close` is a
+      corporate-action row (above).
+    - Freedom24: a row with no readable date, no ticker, or an operation
+      other than `buy` or `sell` after trimming (`sale`, `transfer`). Before,
+      every operation that was not `sell` was booked as a buy (#468).
+    - Lightyear and Scalable Capital: a buy or sale with no date, ticker or
+      ISIN; a type that is not a buy or sale and moves shares. A split or
+      corporate-action type is a corporate-action row (above). Scalable also
+      reads a German date (DD.MM.YYYY).
+    - Flatex: the side comes from the text (Kauf, Verkauf), never from the
+      Nominal's sign alone (#468). A row with neither word is unreadable, so
+      a Depotübertrag Ausgang is no sale and an Einbuchung no repurchase. A
+      Kauf with a negative Nominal is unreadable; a Verkauf with a positive
+      Nominal stays a sale. A Kauf or Verkauf with no ISIN is kept, and so is
+      a row of another text with no ISIN that names a security and moves
+      shares. A row of the ISIN with a written zero Kurs is a corporate-action
+      row. The legs of a custody transfer (`Lagerstellenwechsel`) of one ISIN
+      on one day that net to zero are skipped; every other leg is a
+      corporate-action row, and `flatex.lagerstellenwechsel.unmatched` still
+      names the ISIN.
+    - Trade Republic: a buy or sale with no amount; a TRADING row of another
+      type with a symbol, or a name and a share count. A CORPORATE_ACTION or
+      DELIVERY row that names a security and does not write a zero share
+      count is a corporate-action row (above), and its own warning still
+      names it. The file gives a share count and a sign, but not what the
+      action did (a split, a merger, a transfer in), so booking the count
+      could add or remove shares that were never there. The row books
+      nothing and keeps the evidence "unverified".
+    - DEGIRO: a row with no ISIN but a readable quantity or price, or an
+      order id. When the product name has the shape of an option
+      (`AAPL C200.00 20DEC24`) or a future (`FDAX MAR25`), the row is kept as
+      a derivative (`OPT`, `FUT`): it is named the same way, but it does not
+      stand for every share in the evidence, which derivatives never enter.
+      A row of an ISIN with a written zero price is a corporate-action row.
+    - eToro: an unknown direction in the Spanish `Long / Short` column (only
+      `Long` and `Short` are read), or an English Action with no Buy or
+      Sell, or an empty Action on a row with an ISIN, units or dates. Before,
+      an unknown direction was booked as a long position.
+    - Kraken: a type that is neither `buy` nor `sell` keeps an unreadable row
+      for each coin. Before, it was booked as a buy, so FIFO could take its
+      price as the cost of a later sale (#468). A readable row with no txid
+      is booked under a row id (it was dropped with its gain); a row with no
+      pair is kept unreadable.
+    - IBKR: a trade with no `buySell` takes its side from the quantity's
+      sign; with no signed quantity, the side is unknown (""), never BUY.
   - `buildEvidenceCheck`, for EVERY account (broker and account id) that
     trades the key or lists it in any holdings list of the upload:
     1. it has a holdings list dated on or after the sale day; the earliest such

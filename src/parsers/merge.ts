@@ -1,6 +1,7 @@
 import type { Statement } from "../types/broker.js";
 import Decimal from "decimal.js";
 import { formatDateDmy, isYearEndDate, normalizeDate } from "../engine/dates.js";
+import { readableDay } from "./csv-utils.js";
 
 export function createEmptyStatement(): Statement {
   return {
@@ -128,6 +129,7 @@ export function yearEndHoldings(statement: Statement, year: number): Statement {
 
 export function finalizeMergedStatement(statement: Statement): Statement {
   reconcileOrderLegs(statement);
+  dateUndatedRowsAtUploadStart(statement);
 
   // Same-day trades go by time of day, then keep the parser's row order (the
   // sort is stable). Never by tradeID: Kraken txids are random and row-index
@@ -148,6 +150,34 @@ export function finalizeMergedStatement(statement: Statement): Statement {
     normalizeDate(a.date).localeCompare(normalizeDate(b.date)),
   );
   return statement;
+}
+
+/**
+ * A kept trade row whose file gives no readable date (`undatedRow`, #467)
+ * cannot be placed in time, so it must make the one-purchase evidence (#453)
+ * "unverified" whatever the window. With an ISIN it does at any date. With no
+ * ISIN the evidence reads it only before a sale's window start or between the
+ * window start and the year-end list it checks, never after that list. The
+ * earliest date of the whole upload (trades and cash rows) is on or before
+ * every sale, so the row stands in one of those two places for every sale.
+ * The engine needs a real date (crypto valuation throws on ""), and this one
+ * adds no year to the upload. The row books nothing, so no number moves.
+ * When the upload has no readable date at all it has no sale either: the row
+ * is left out of the merged trades and stays named by its parser's warning.
+ * A copy replaces each row: the parsed file's own statement keeps its trade.
+ */
+function dateUndatedRowsAtUploadStart(statement: Statement): void {
+  if (!statement.trades.some((t) => t.undatedRow === true)) return;
+  const days = [
+    ...statement.trades.map((t) => t.tradeDate),
+    ...statement.cashTransactions.map((c) => c.dateTime),
+  ]
+    .flatMap((d) => readableDay(d) ?? [])
+    .sort();
+  const earliest = days[0];
+  statement.trades = earliest === undefined
+    ? statement.trades.filter((t) => t.undatedRow !== true)
+    : statement.trades.map((t) => (t.undatedRow === true ? { ...t, tradeDate: earliest, settlementDate: earliest } : t));
 }
 
 /**

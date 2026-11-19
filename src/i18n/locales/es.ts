@@ -1112,10 +1112,6 @@ const es = {
     "{{count}} operación(es) de Advanced Trade de Coinbase se pagaron o cobraron en una moneda distinta de la de valoración ({{pairs}}); solo se ha registrado la criptomoneda comprada o vendida, no la moneda de contrapartida.",
   "coinbase.advanced_trade_quote_leg_missing.hint":
     "En estos pares también transmites (al comprar) o adquieres (al vender) la moneda de cotización, sea otra criptomoneda o una divisa, y esa operación también tributa. Añade manualmente la venta o la compra de esa moneda por el mismo valor en euros de la operación para que su ganancia y su coste de adquisición cuadren.",
-  "trade_republic.trade_skipped_no_amount":
-    "Se ha(n) omitido {{count}} operación(es) de compraventa de Trade Republic sin importe utilizable.",
-  "trade_republic.trade_skipped_no_amount.hint":
-    'Suele deberse a filas incompletas en la exportación (columna "amount" vacía o no numérica). Si faltan operaciones, vuelve a descargar el CSV de transacciones completo desde Trade Republic.',
   "trade_republic.corporate_action_not_applied":
     "Trade Republic: no se han aplicado {{count}} movimiento(s) de acción corporativa (fusión, canje, split) de {{isins}}.",
   "trade_republic.corporate_action_not_applied.hint":
@@ -1151,6 +1147,20 @@ const es = {
   "parser.trade_quantity_unknown.hint": "DeclaRenta no suma ni resta acciones por ellas, así que las ganancias y pérdidas de ese valor no son fiables y no se aplica la excepción de compra única de la regla de los 2 meses. Comprueba que el archivo exportado trae la cantidad y el precio de cada operación y vuelve a exportarlo.",
   "parser.crypto_quantity_unknown": "{{broker}} no da un número de unidades o un precio legible para {{count}} operación(es) con criptomonedas: {{trades}}.",
   "parser.crypto_quantity_unknown.hint": "DeclaRenta no suma ni resta unidades por ellas, así que las ganancias y pérdidas de esa criptomoneda no son fiables. Si una de ellas es una recompra en el año siguiente a una venta con pérdidas, esa pérdida puede tener que quedar pendiente (art. 33.5.e LIRPF), y DeclaRenta no la bloquea porque no sabe cuántas unidades recompraste. Comprueba que el archivo exportado trae la cantidad y el precio de cada operación y vuelve a exportarlo.",
+  "parser.trade_row_unreadable": "{{broker}}: {{count}} fila(s) de operación no se pueden leer y no se calculan: {{rows}}.",
+  "parser.trade_row_unreadable.hint": "Entre corchetes va la celda que falta, está vacía, no se puede leer o trae un tipo de operación que DeclaRenta no reconoce. DeclaRenta no suma ni resta acciones, unidades ni dinero por esas filas, así que las ganancias y pérdidas de esos valores no son fiables, y no aplica la excepción de compra única de la regla de los 2 meses a un valor que pueda ser el de una de ellas. Si una fila es una compra o una venta real, corrige esa celda en el archivo del broker y vuelve a subirlo.",
+  "revolut.bad_fx_rate": "Se ha(n) omitido {{count}} ingreso(s) o retirada(s) de efectivo del extracto de Revolut por tener un tipo de cambio (FX Rate) no válido: {{rows}}.",
+  "revolut.bad_fx_rate.hint": "Solo los ingresos y las retiradas de efectivo usan esa columna; las compras, las ventas y los dividendos se calculan con el tipo del BCE y no se omiten. Suele deberse a una celda de tipo de cambio no numérica, negativa o igual a cero en la exportación. Vuelve a descargar el Trading Account Statement completo desde la app de Revolut para que esos movimientos se incluyan.",
+  "revolut.holding_size_unknown": "El extracto de Revolut no permite saber cuántas acciones o unidades tienes al final de {{count}} valor(es): {{tickers}}.",
+  "revolut.holding_size_unknown.hint": "Una fila de cada uno no se puede leer o no dice cuántas acciones o unidades mueve (otro aviso la nombra). DeclaRenta muestra solo la parte que sí se puede leer, que puede ser 0. Para los modelos 720 y 721, toma el número y el valor de esas posiciones del extracto de Revolut y añádelos a mano.",
+  "parser.corporate_action_not_applied": "{{broker}}: no se han aplicado {{count}} fila(s) de desdoblamiento, agrupación u otra operación societaria: {{rows}}.",
+  "parser.corporate_action_not_applied.hint": "DeclaRenta no cambia por ellas el número de acciones ni el coste de esos valores, así que las ganancias y pérdidas de sus ventas posteriores pueden no ser correctas: compruébalas con el extracto del broker. Tampoco aplica a esos valores la excepción de compra única de la regla de los 2 meses.",
+  "parser.cash_row_undated": "{{broker}}: {{count}} movimiento(s) de dinero no tienen una fecha legible y no se calculan: {{rows}}.",
+  "parser.cash_row_undated.hint": "Entre corchetes va la celda de la fecha. Sin fecha, DeclaRenta no sabe a qué año pertenece el importe ni qué tipo de cambio del BCE le toca, así que no lo suma y no se inventa una fecha. Si es un dividendo, una retención, un interés u otro ingreso del año que declaras, corrige la fecha en el archivo del broker y vuelve a subirlo, o añade el importe a mano en Renta Web.",
+  "parser.cash_row_unidentified": "{{broker}}: {{count}} dividendo(s) o retención(es) no dicen de qué valor son y no se calculan: {{rows}}.",
+  "parser.cash_row_unidentified.hint": "La fila no trae ni el ticker ni el ISIN. Sin el valor, DeclaRenta no sabe de qué país viene el dividendo ni con qué retención va, así que no lo suma y no se inventa el valor. Si es un ingreso del año que declaras, corrige la fila en el archivo del broker y vuelve a subirlo, o añade el importe a mano en Renta Web.",
+  "revolut.dividend_tax_correction": "El extracto de Revolut trae {{count}} corrección(es) de la retención de un dividendo (DIVIDEND TAX (CORRECTION)) que DeclaRenta no suma: {{rows}}.",
+  "revolut.dividend_tax_correction.hint": "Con estas filas Revolut corrige la retención de un dividendo ya cobrado. DeclaRenta importa los dividendos de Revolut por su importe neto y no lee la retención de este extracto, así que tampoco su corrección. Toma el dividendo bruto y la retención final, ya corregida, del informe fiscal anual de Revolut.",
 } as const;
 
 export type TranslationKeys = Record<keyof typeof es, string>;

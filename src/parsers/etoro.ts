@@ -21,7 +21,22 @@ import Decimal from "decimal.js";
 import type { BrokerParser, Statement } from "../types/broker.js";
 import type { Trade, CashTransaction } from "../types/ibkr.js";
 import type { TaxMessage } from "../types/tax.js";
-import { findColumn, parseNumber, toFiniteDecimal, toFiniteDecimalString, quantityUnknownTrade, quantityUnreadable, tradeQuantityUnknownMessages } from "./csv-utils.js";
+import {
+  findColumn,
+  parseNumber,
+  toFiniteDecimal,
+  toFiniteDecimalString,
+  quantityUnknownTrade,
+  quantityUnreadable,
+  tradeQuantityUnknownMessages,
+  unreadableTrade,
+  unreadableCell,
+  markUndatedTrades,
+  dropUndatedCash,
+  isoDateCells,
+  slashDateOrder,
+  convertSlashDate,
+} from "./csv-utils.js";
 
 // We use dynamic import for xlsx to keep it optional
 type WorkBook = import("xlsx").WorkBook;
@@ -74,22 +89,20 @@ function sheetToRows(xlsx: typeof import("xlsx"), sheet: WorkSheet): string[][] 
   return xlsx.utils.sheet_to_json<string[]>(sheet, { header: 1, raw: false, defval: "" });
 }
 
-function parseEtoroDate(dateStr: string): string {
+/**
+ * An eToro date as YYYYMMDD. eToro writes "DD/MM/YYYY HH:MM:SS"; a slash date
+ * is read in the file's order (`order`, {@link slashDateOrder}: day first
+ * unless the file shows month first), the same way with or without a leading
+ * zero.
+ */
+function parseEtoroDate(dateStr: string, order: "DMY" | "MDY"): string {
   const trimmed = dateStr.trim();
-  // DD/MM/YYYY HH:MM:SS or DD/MM/YYYY
-  const slashMatch = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
-  if (slashMatch) {
-    return `${slashMatch[3]}${slashMatch[2]}${slashMatch[1]}`;
-  }
+  const slash = convertSlashDate(trimmed, order);
+  if (slash !== undefined) return slash;
   // YYYY-MM-DD
   const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) {
     return `${isoMatch[1]}${isoMatch[2]}${isoMatch[3]}`;
-  }
-  // MM/DD/YYYY (US format sometimes used)
-  const usMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (usMatch) {
-    return `${usMatch[3]}${usMatch[1]!.padStart(2, "0")}${usMatch[2]!.padStart(2, "0")}`;
   }
   return trimmed.replace(/[-/]/g, "").slice(0, 8);
 }
@@ -115,6 +128,8 @@ function parseClosedPositions(
   parserMessages: TaxMessage[],
 ): Trade[] {
   const rows = sheetToRows(xlsx, sheet);
+  // Every date of a sheet is in one order; no other cell has a slash date.
+  const order = slashDateOrder(rows.slice(1).flat());
   if (rows.length < 2) return [];
 
   const headers = rows[0]!;
@@ -148,11 +163,9 @@ function parseClosedPositions(
 
   const trades: Trade[] = [];
 
-  // Count DATA-BEARING rows that were dropped (action/units present but
-  // unparsable) — genuinely-empty rows are NOT counted.
+  // Count DATA-BEARING rows that were dropped (units of a written zero) —
+  // genuinely-empty rows are NOT counted.
   let skippedDataRows = 0;
-  // Count rows whose Long/Short direction value was non-empty but unrecognized.
-  let unrecognizedDirection = 0;
   // Rows skipped because their Type is unsupported (e.g. crypto), per raw type.
   const skippedTypes = new Map<string, number>();
 
@@ -194,40 +207,38 @@ function parseClosedPositions(
     // English: "Action" = "Buy AAPL" (direction + symbol combined)
     // Spanish: "Acción" = instrument name, "Long / Short" = direction
     const actionStr = row[actionCol] ?? "";
+    // An empty Action names no position only when the row has nothing else
+    // either (no ISIN, units or dates): a totals or blank line, skipped. With
+    // any of them it is a position whose name is missing, kept unreadable.
+    const blankPosition = !actionStr.trim() &&
+      [isinCol, unitsCol, openDateCol, closeDateCol].every((c) => c < 0 || !(row[c] ?? "").trim());
+    if (blankPosition) continue;
     let symbol: string;
-    let direction: "BUY" | "SELL";
+    let direction: "BUY" | "SELL" | undefined;
+    // The cell that makes a closed position unreadable (#467, #468): kept as
+    // its two legs, which book nothing, never dropped or read as a long one.
+    let cell: string | undefined;
 
     if (directionCol >= 0) {
       // Spanish format: Acción = name, Long/Short = direction
       symbol = actionStr.trim();
       const dirStr = (row[directionCol] ?? "").toLowerCase().trim();
-      // Recognized values: short → SELL; long/buy/real/empty → BUY. Flag any
-      // other non-empty value instead of silently treating it as BUY.
-      if (dirStr === "short") {
-        direction = "SELL";
-      } else {
-        direction = "BUY";
-        if (dirStr && dirStr !== "long" && dirStr !== "buy" && dirStr !== "real") {
-          unrecognizedDirection++;
-        }
-      }
+      // Recognized values: short → SELL; long/buy/real/empty → BUY. Any other
+      // value is unreadable: a short read as a long flips its result's sign.
+      if (dirStr === "short") direction = "SELL";
+      else if (!dirStr || dirStr === "long" || dirStr === "buy" || dirStr === "real") direction = "BUY";
+      else cell = unreadableCell(headers[directionCol] ?? "Long / Short", row[directionCol] ?? "");
+      if (!symbol) cell = unreadableCell(headers[actionCol] ?? "Action", actionStr);
     } else {
       const parsed = parseAction(actionStr);
-      if (!parsed) {
-        // Action column present but its value is not a parsable Buy/Sell+symbol.
-        if (actionStr.trim()) skippedDataRows++;
-        continue;
+      if (parsed) {
+        symbol = parsed.symbol;
+        direction = parsed.direction;
+      } else {
+        symbol = actionStr.trim();
+        cell = unreadableCell(headers[actionCol] ?? "Action", actionStr);
       }
-      symbol = parsed.symbol;
-      direction = parsed.direction;
     }
-
-    if (!symbol) {
-      // Direction-column format with an empty instrument name → data dropped.
-      skippedDataRows++;
-      continue;
-    }
-
     const isin = isinCol >= 0 ? (row[isinCol] ?? "").trim() : "";
     const units = (row[unitsCol] ?? "0").trim();
     const openRate = openRateCol >= 0 ? (row[openRateCol] ?? "0").trim() : "0";
@@ -246,10 +257,19 @@ function parseClosedPositions(
       : profitCol >= 0 ? (row[profitCol] ?? "0").trim()
       : profitEurCol >= 0 ? (row[profitEurCol] ?? "0").trim() : "0";
     const profit = parseNumber(profitRaw);
-    const openDate = openDateCol >= 0 ? parseEtoroDate(row[openDateCol] ?? "") : "";
-    const closeDate = closeDateCol >= 0 ? parseEtoroDate(row[closeDateCol] ?? "") : "";
+    const openDate = openDateCol >= 0 ? parseEtoroDate(row[openDateCol] ?? "", order) : "";
+    const closeDate = closeDateCol >= 0 ? parseEtoroDate(row[closeDateCol] ?? "", order) : "";
 
     const unitsNum = parseFloat(parseNumber(units));
+    if (cell !== undefined || direction === undefined) {
+      const leg = { symbol, isin, assetCategory: assetCat, currency, exchange: "ETORO" } as const;
+      const legCell = cell ?? unreadableCell(headers[actionCol] ?? "Action", actionStr);
+      trades.push(
+        unreadableTrade({ ...leg, tradeID: `etoro-open-${openDate}-${symbol}-${i}`, tradeDate: openDate, ...(direction ? { buySell: direction } : {}) }, legCell),
+        unreadableTrade({ ...leg, tradeID: `etoro-close-${closeDate}-${symbol}-${i}`, tradeDate: closeDate, ...(direction ? { buySell: direction === "SELL" ? "BUY" as const : "SELL" as const } : {}) }, legCell),
+      );
+      continue;
+    }
     // Empty or unreadable units are no "0": keep both legs as trades of
     // unknown quantity for the anti-churning evidence (#453).
     if (quantityUnreadable(row[unitsCol])) {
@@ -261,7 +281,7 @@ function parseClosedPositions(
       continue;
     }
     if (unitsNum === 0 || isNaN(unitsNum)) {
-      // Symbol resolved (data-bearing row) but units are zero/non-numeric.
+      // Symbol resolved (data-bearing row) but units are a written zero.
       skippedDataRows++;
       continue;
     }
@@ -338,8 +358,8 @@ function parseClosedPositions(
     parserMessages.push({
       id: "etoro.closed_rows_skipped",
       severity: "warning",
-      message: `Se ha(n) omitido ${skippedDataRows} fila(s) de "Posiciones cerradas" de eToro con datos no interpretables (acción, símbolo o unidades inválidos).`,
-      hint: "eToro cambia el formato de exportación; vuelve a descargar el informe XLSX completo de la cuenta. Si faltan operaciones, revisa que las columnas de acción y unidades estén presentes.",
+      message: `Se ha(n) omitido ${skippedDataRows} fila(s) de "Posiciones cerradas" de eToro con 0 unidades.`,
+      hint: "Una posición de 0 unidades no compra ni vende nada. Si no es así, revisa la columna de unidades y vuelve a descargar el informe XLSX completo de la cuenta.",
       context: { count: String(skippedDataRows) },
     });
   }
@@ -356,16 +376,7 @@ function parseClosedPositions(
     });
   }
 
-  if (unrecognizedDirection > 0) {
-    parserMessages.push({
-      id: "etoro.direction_not_recognized",
-      severity: "info",
-      message: `Dirección eToro no reconocida en ${unrecognizedDirection} fila(s); se ha(n) tratado como compra (Long).`,
-      hint: "eToro usa \"Long\"/\"Short\" en la columna de dirección; un valor distinto se interpreta como posición larga. Verifica esas operaciones si el resultado no cuadra.",
-      context: { count: String(unrecognizedDirection) },
-    });
-  }
-
+  markUndatedTrades(trades, "Open Date / Close Date");
   parserMessages.push(...tradeQuantityUnknownMessages("eToro", trades));
 
   return trades;
@@ -377,6 +388,8 @@ function parseClosedPositions(
 
 function parseDividends(xlsx: typeof import("xlsx"), sheet: WorkSheet): CashTransaction[] {
   const rows = sheetToRows(xlsx, sheet);
+  // Every date of a sheet is in one order; no other cell has a slash date.
+  const order = slashDateOrder(rows.slice(1).flat());
   if (rows.length < 2) return [];
 
   const headers = rows[0]!;
@@ -405,12 +418,14 @@ function parseDividends(xlsx: typeof import("xlsx"), sheet: WorkSheet): CashTran
     if (!row.length) continue;
 
     const dateStr = (row[dateCol] ?? "").trim();
-    if (!dateStr) continue;
-
-    const tradeDate = parseEtoroDate(dateStr);
     const instrument = instrumentCol >= 0 ? (row[instrumentCol] ?? "").trim() : "";
     const netAmount = (row[effectiveNetCol] ?? "0").trim();
     const isin = isinCol >= 0 ? (row[isinCol] ?? "").trim() : "";
+    // A dividend with no readable date is booked with that date and taken out,
+    // named with its amount, by dropUndatedCash (#467). A row with no date
+    // that names no security (a totals line) stays skipped.
+    if (!dateStr && (!(instrument || isin) || /^total/i.test(instrument))) continue;
+    const tradeDate = parseEtoroDate(dateStr, order);
 
     const netNum = parseFloat(parseNumber(netAmount));
     if (isNaN(netNum) || netNum === 0) continue;
@@ -498,6 +513,8 @@ const ACTIVITY_AMOUNT_HEADERS = ["amount", "importe"];
 
 function parseAccountActivity(xlsx: typeof import("xlsx"), sheet: WorkSheet): CashTransaction[] {
   const rows = sheetToRows(xlsx, sheet);
+  // Every date of a sheet is in one order; no other cell has a slash date.
+  const order = slashDateOrder(rows.slice(1).flat());
   if (rows.length < 2) return [];
 
   const headers = rows[0]!;
@@ -517,10 +534,10 @@ function parseAccountActivity(xlsx: typeof import("xlsx"), sheet: WorkSheet): Ca
     // Only capture interest payments
     if (!typeStr.includes("interest") && !typeStr.includes("intereses")) continue;
 
+    // An interest row with no readable date is booked with that date and
+    // taken out, named with its amount, by dropUndatedCash (#467).
     const dateStr = (row[dateCol] ?? "").trim();
-    if (!dateStr) continue;
-
-    const tradeDate = parseEtoroDate(dateStr);
+    const tradeDate = parseEtoroDate(dateStr, order);
     const amountStr = (row[amountCol] ?? "0").trim();
     const amountNum = parseFloat(parseNumber(amountStr));
     if (isNaN(amountNum) || amountNum === 0) continue;
@@ -555,7 +572,11 @@ function parseAccountActivity(xlsx: typeof import("xlsx"), sheet: WorkSheet): Ca
  */
 export async function parseEtoroXlsx(data: Buffer | Uint8Array): Promise<Statement> {
   const xlsx = await import("xlsx");
-  const wb = xlsx.read(data, { type: "buffer" });
+  const wb = xlsx.read(data, { type: "buffer", cellNF: true });
+  for (const name of wb.SheetNames) {
+    const sheet = wb.Sheets[name];
+    if (sheet) isoDateCells(xlsx, sheet, wb.Workbook?.WBProps?.date1904 === true);
+  }
 
   const closedSheet = getSheet(wb, ["closed positions", "posiciones cerradas"]);
   const dividendSheet = getSheet(wb, ["dividends", "dividendos"]);
@@ -565,6 +586,8 @@ export async function parseEtoroXlsx(data: Buffer | Uint8Array): Promise<Stateme
   const trades = closedSheet ? parseClosedPositions(xlsx, closedSheet, parserMessages) : [];
   const dividends = dividendSheet ? parseDividends(xlsx, dividendSheet) : [];
   const interest = activitySheet ? parseAccountActivity(xlsx, activitySheet) : [];
+  const cashTransactions = [...dividends, ...interest];
+  parserMessages.push(...dropUndatedCash("eToro", cashTransactions));
 
   return {
     accountId: "",
@@ -572,7 +595,7 @@ export async function parseEtoroXlsx(data: Buffer | Uint8Array): Promise<Stateme
     toDate: "",
     period: "",
     trades,
-    cashTransactions: [...dividends, ...interest],
+    cashTransactions,
     corporateActions: [],
     openPositions: [],
     securitiesInfo: [],
