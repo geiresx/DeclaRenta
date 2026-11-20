@@ -31,6 +31,7 @@ import {
   tradeQuantityUnknownMessages,
 } from "./csv-utils.js";
 import { formatDateDmy } from "../engine/dates.js";
+import { plainOrExponent } from "../engine/amount-range.js";
 
 // ---------------------------------------------------------------------------
 // Header detection patterns (multi-language)
@@ -261,7 +262,7 @@ function parseTransactionsCsv(lines: string[], delimiter: string): Statement {
     const txCosts = toFiniteDecimal(fields[cols.costs] ?? "0");
     const autoFx = cols.autoFxCosts >= 0 ? toFiniteDecimal(fields[cols.autoFxCosts] ?? "0") : toFiniteDecimal("0");
     const commDec = txCosts.plus(autoFx);
-    const commission = commDec.isZero() ? "0" : commDec.toFixed(2);
+    const commission = commDec.isZero() ? "0" : plainOrExponent(commDec, 2);
     // When header already embeds "EUR" (costsCurrency = -1), default to EUR
     const commCurrency = cols.costsCurrency >= 0 ? (fields[cols.costsCurrency] ?? "EUR").trim() : "EUR";
 
@@ -277,7 +278,8 @@ function parseTransactionsCsv(lines: string[], delimiter: string): Statement {
     // An empty or unreadable quantity is no "0": a buy or sale row of an ISIN
     // is kept as a trade of unknown quantity (below, #453).
     const quantityUnknown = isin !== "" && quantityUnreadable(fields[cols.quantity]);
-    if (!isin || (quantity === "0" && !quantityUnknown)) {
+    // Numeric: "0.0" or "0,00" with a readable price is a 0-share row too (#469).
+    if (!isin || (toFiniteDecimal(quantity).isZero() && !quantityUnknown)) {
       // Trade-like row (carries a real quantity or price) dropped for lack of
       // ISIN / amount → suspicious (likely column drift). Plain non-trade lines
       // (deposits/sweeps with no qty and no price) are expected → not counted.
@@ -575,7 +577,7 @@ function parseAccountCsv(lines: string[], delimiter: string): Statement {
   for (const { product, isin, currency, total } of transactionTax.values()) {
     const paid = total.negated();
     if (!paid.greaterThan(0)) continue;
-    const amount = paid.toFixed(2);
+    const amount = plainOrExponent(paid, 2);
     const name = product || isin;
     parserMessages.push({
       id: "degiro.transaction_tax",
